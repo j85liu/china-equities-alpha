@@ -1,0 +1,33 @@
+[project]
+name = "china-equities-alpha"
+version = "0.1.0"
+description = "Point-in-time data ingestion for alternative-data alpha research on China A-shares"
+authors = [
+    { name = "James Liu", email = "james.liu@columbia.edu" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "akshare>=1.18.97",
+    "baostock>=0.9.4",
+    "duckdb>=1.5.5",
+    "pandas>=3.0.6",
+    "pyarrow>=25.0.1",
+    "tabulate>=0.10.0",
+    "tenacity>=9.1.4",
+    "typer>=0.27.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[project.scripts]
+alpha = "china_equities_alpha.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
