@@ -1,6 +1,6 @@
 from datetime import date
 
-from china_equities_alpha.jobs.market import missing_range
+from china_equities_alpha.jobs.market import _clip, missing_range
 
 R = (date(2023, 1, 1), date(2024, 12, 31))
 
@@ -26,3 +26,8 @@ def test_disjoint_request_stays_contiguous():
 
 def test_empty_request():
     assert missing_range((date(2024, 1, 2), date(2024, 1, 1)), None) == []
+
+
+def test_clip_to_listing_window():
+    assert _clip(*R, date(2010, 1, 4), date(2024, 8, 28)) == (date(2023, 1, 1), date(2024, 8, 28))
+    assert _clip(*R, date(2023, 7, 5), None) == (date(2023, 7, 5), date(2024, 12, 31))

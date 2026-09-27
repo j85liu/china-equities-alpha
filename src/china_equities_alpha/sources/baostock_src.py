@@ -28,9 +28,10 @@ class BaostockError(RuntimeError):
 
 
 class Baostock:
-    def __init__(self, min_interval: float = 0.05, attempts: int = 4, timeout: float = 30.0):
+    def __init__(self, min_interval: float = 0.2, jitter: float = 0.3, attempts: int = 4,
+                 timeout: float = 30.0):
         self._timeout = timeout
-        self._limiter = RateLimiter(min_interval)
+        self._limiter = RateLimiter(min_interval, jitter)
         self._attempts = attempts
         self._logged_in = False
 

@@ -102,13 +102,23 @@ Derived views:
 Written after every CLI run. It covers:
 - rows, versions, event-date range, duplicate keys, exact duplicate rows and null counts for each table
 - for bars: gaps against the trading calendar, bars on non-trading days, OHLC consistency, and `pct_chg` against close/preclose
-- **price-limit breaches**. The limit price is `preclose × (1 ± limit)` rounded half-up to the 0.01 tick, so a 0.52 → 0.49 day on an ST stock (−5.77%) correctly counts as limit-down, not a breach. Limits used:
-  - main board ±10%, ST ±5% (±10% from 2025-07-07)
-  - ChiNext ±20% from 2020-08-24
-  - STAR ±20%
-  - BSE ±30%
-  - no limit in a stock's first trading days: 5 days on the registration-based boards, day 1 otherwise
+- **price-limit breaches**. The daily limit price is `preclose × (1 ± limit)` rounded half-up to the 0.01 tick, so a 0.52 → 0.49 day on an ST stock (−5.77%) correctly counts as limit-down, not a breach. Every rule is date-aware and cites its exchange source in the code:
 
+  | board | rule | in force |
+  |---|---|---|
+  | main | ±10%; ST ±5% | ST moves to ±10% on **2026-07-06** (SSE 上证发〔2026〕41号; SZSE Trading Rules 2026 §3.3.13) |
+  | main | IPO day 1: order band 144% / 64% of issue price (+44% / −36%) | 2014-06-13 (SSE 上证发〔2014〕37号) until registration reform |
+  | main | IPO first 5 days: no limit | listings from 2023-04-10 (first registration-era listing) |
+  | ChiNext | ±10%, ST ±5%, IPO day-1 band as main board | until 2020-08-23 |
+  | ChiNext | ±20% (ST included); IPO first 5 days no limit | 2020-08-24 (SZSE 深证上〔2020〕515号) |
+  | STAR | ±20% (ST included); IPO first 5 days no limit | since launch, 2019-07-22 |
+
+  The IPO band edge is rounded half-up to the tick, like a daily limit. The 2015–2026 data confirms it: day-1 closes sit exactly on half-up(1.44 × issue price), e.g. 7.47 → 10.76.
+
+  Breaches are grouped by likely cause, and the headline figure is `price_limit_unexplained`:
+  - first day of the delisting period (≤ 45 days before the delist date)
+  - first trade after a suspension (relistings, reverse mergers)
+  - day 1 of a non-IPO listing (merger absorption, B-share to A-share conversion)
   See [limits.py](src/china_equities_alpha/limits.py).
 
 ## Orchestration
@@ -128,11 +138,29 @@ warehouse one after another (e.g. with a pool of size 1).
 
 ## Known limitations
 
-- **No Beijing Stock Exchange in baostock.** BSE listings need another source. The
-  symbol and price-limit code already handle BSE.
+- **No Beijing Stock Exchange (BSE) data.** baostock has no BSE listings. For now BSE is out of
+  scope: the warehouse covers SSE and SZSE only. The symbol and price-limit code
+  recognise `.BJ`, but the BSE ±30% rule is unverified.
+- **Index constituents are weekly snapshots, not an official change log.** baostock only
+  exposes the constituent list as of its latest snapshot (`updateDate`, roughly weekly, sometimes
+  months apart; e.g. the 2022-08-01 list was still current in January 2023). We sample the last
+  trading day of each week, so:
+  - membership changes are known only to within about one week;
+  - `event_date` is baostock's snapshot date, not CSI's effective date;
+  - CSI announces changes about 2 weeks before they take effect, and those announcement dates
+    aren't captured (`publish_date` is NULL).
+  Use `index_membership` for approximate universes; don't use it for event studies on index inclusion.
+- **Price-limit rules not modelled.** These days show up as breaches; the report groups the common ones by cause:
+  - first day of relisting;
+  - first day of the delisting-consolidation period;
+  - the three ChiNext stocks that stayed at ±10% during delisting after the 2020 reform;
+  - main-board IPOs approved under the old approval regime that listed after 2023-04-10.
+    These are treated as registration listings, which may hide a breach but never adds a false one.
+  - Pre-2014-06-13 first days are treated as unlimited.
+  - The SZSE 2014 first-day notice and the approval-regime carve-out come from secondary sources.
 - **baostock is slow** (1–5 s per request from outside mainland China). `--workers N` runs N
-  sessions in parallel. Please keep N modest; it's a free public service.
-- **Index history resolution** is baostock's snapshot cadence (about weekly). Snapshot dates
-  are not the official effective dates, and CSI announcements (about 2 weeks earlier) aren't captured.
+  sessions in parallel with jittered spacing. Please keep N modest; it's a free public service.
+- **Delisting dates**: baostock's `outDate` is sometimes the last trading day and sometimes the
+  day after. Treat `delist_date` as accurate to within one day.
 - **Universe** comes from a current snapshot of listings. Name history starts on
   the first ingest date. ST history comes from the daily `is_st` flag.

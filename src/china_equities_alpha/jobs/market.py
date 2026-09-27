@@ -130,6 +130,8 @@ def _load_universe(wh: Warehouse, symbols: list[str] | None) -> pd.DataFrame:
 
 def _clip(start: date, end: date, list_date: date | None, delist_date: date | None
           ) -> tuple[date, date]:
+    # baostock's outDate is sometimes the last trading day and sometimes the day after, so it
+    # stays inclusive here; the quality check ignores a missing bar on the delist date itself.
     s = max(start, list_date) if list_date else start
     e = min(end, delist_date) if delist_date else end
     return s, e

@@ -58,18 +58,20 @@ def _bars_checks(wh: Warehouse, r: TableReport, max_examples: int) -> None:
             SELECT key AS symbol, min(start_date) s, max(end_date) e FROM _ingest_log
             WHERE dataset = 'daily_bars' AND status = 'ok' GROUP BY key
         ), expected AS (
-            SELECT cov.symbol, count(*) n_expected FROM cov
+            SELECT cov.symbol, c.event_date FROM cov
+            JOIN securities_latest sec ON sec.symbol = cov.symbol
             JOIN trading_calendar_latest c ON c.is_trading_day AND c.event_date BETWEEN cov.s AND cov.e
-            GROUP BY cov.symbol
-        ), actual AS (SELECT symbol, count(*) n_actual FROM daily_bars_latest GROUP BY symbol)
-        SELECT e.symbol, n_expected, coalesce(n_actual, 0) n_actual,
-               n_expected - coalesce(n_actual, 0) AS missing
-        FROM expected e LEFT JOIN actual a USING (symbol)
-        WHERE n_expected <> coalesce(n_actual, 0) ORDER BY missing DESC
+            -- baostock's outDate is sometimes the day after the last trade: don't count it
+            WHERE sec.delist_date IS NULL OR c.event_date < sec.delist_date
+        )
+        SELECT symbol, count(*) AS missing, min(event_date) AS first_missing,
+               max(event_date) AS last_missing
+        FROM expected ANTI JOIN daily_bars_latest USING (symbol, event_date)
+        GROUP BY symbol ORDER BY missing DESC
     """)
     r.checks["symbols"] = con.execute("SELECT count(DISTINCT symbol) FROM daily_bars_latest").fetchone()[0]
     r.checks["symbols_with_missing_days"] = len(gaps)
-    r.checks["missing_days_total"] = int(gaps["missing"].clip(lower=0).sum()) if len(gaps) else 0
+    r.checks["missing_days_total"] = int(gaps["missing"].sum()) if len(gaps) else 0
     r.checks["missing_days_examples"] = gaps.head(max_examples).to_dict("records")
     r.checks["bars_on_non_trading_days"] = con.execute("""
         SELECT count(*) FROM daily_bars_latest b JOIN trading_calendar_latest c USING (event_date)
@@ -100,9 +102,10 @@ def _bars_checks(wh: Warehouse, r: TableReport, max_examples: int) -> None:
             SELECT s.symbol, min(c.n) AS n0
             FROM securities_latest s JOIN cal c ON c.event_date >= s.list_date GROUP BY s.symbol
         )
-        SELECT b.symbol, s.name, s.board, s.list_date, b.event_date, b.is_st, b.preclose, b.close,
-               c.n - f.n0 + 1 AS listing_day
-        FROM daily_bars_latest b
+        SELECT b.symbol, s.name, s.board, s.list_date, s.delist_date, b.event_date, b.is_st,
+               b.preclose, b.close, c.n - f.n0 + 1 AS listing_day, b.prev_trading
+        FROM (SELECT *, lag(is_trading) OVER (PARTITION BY symbol ORDER BY event_date) AS prev_trading
+              FROM daily_bars_latest) b
         JOIN securities_latest s ON s.symbol = b.symbol
         JOIN cal c ON c.event_date = b.event_date
         JOIN first_day f ON f.symbol = b.symbol
@@ -110,17 +113,44 @@ def _bars_checks(wh: Warehouse, r: TableReport, max_examples: int) -> None:
     """)
     if bars.empty:
         return
-    for col in ("event_date", "list_date"):
+    for col in ("event_date", "list_date", "delist_date"):
         bars[col] = pd.to_datetime(bars[col]).dt.date
     breaches, hits = flag_limit_breaches(bars, return_hits=True)
     r.checks["limit_up_closes"] = int(hits["up"])
     r.checks["limit_down_closes"] = int(hits["down"])
+    breaches = breaches.assign(reason=classify_breaches(breaches), ret=breaches["ret"].round(4))
     r.checks["price_limit_checked_rows"] = len(bars)
     r.checks["price_limit_breaches"] = len(breaches)
-    ex = breaches.assign(ret=breaches["ret"].round(4))[
-        ["symbol", "name", "board", "event_date", "is_st", "listing_day", "preclose", "close",
-         "limit", "ret"]].head(max_examples)
-    r.checks["price_limit_breach_examples"] = ex.to_dict("records")
+    r.checks["price_limit_breaches_by_reason"] = breaches["reason"].value_counts().to_dict()
+    cols = ["symbol", "name", "board", "event_date", "is_st", "listing_day", "preclose", "close",
+            "limit_up_pct", "limit_down_pct", "ret", "reason"]
+    unexplained = breaches[breaches["reason"] == "unexplained"]
+    r.checks["price_limit_unexplained"] = len(unexplained)
+    r.checks["price_limit_unexplained_examples"] = unexplained[cols].head(max_examples).to_dict("records")
+
+
+# Exempt days the limit rules don't model (SZSE Trading Rules 2026 §3.3.15 and predecessors):
+# the first day of the delisting-consolidation period (15 trading days, ≈ 3–5 weeks before the
+# delist date), the first trade after a relisting / reverse-merger suspension, and the first day
+# of a non-IPO listing (merger absorption, B-share to A-share conversion).
+DELISTING_WINDOW_DAYS = 45
+
+
+def classify_breaches(breaches: pd.DataFrame) -> pd.Series:
+    days_to_delist = [
+        (d - e).days if pd.notna(d) else None
+        for d, e in zip(breaches["delist_date"], breaches["event_date"])
+    ]
+    near_delist = pd.Series([x is not None and 0 < x <= DELISTING_WINDOW_DAYS for x in days_to_delist],
+                            index=breaches.index)
+    after_suspension = breaches["prev_trading"].eq(False)
+    reason = pd.Series("unexplained", index=breaches.index)
+    # Day-1 moves beyond the IPO band: listings that weren't IPOs (merger / B-to-A / transfer
+    # listings) have no first-day limit, and preclose is a reference price, not an issue price.
+    reason[breaches["listing_day"] == 1] = "non_ipo_listing_day1?"
+    reason[after_suspension] = "first_trade_after_suspension (relisting?)"
+    reason[near_delist] = "delisting_period_first_day?"
+    return reason
 
 
 def build_report(wh: Warehouse, specs: list[TableSpec], max_examples: int = 15) -> dict[str, Any]:

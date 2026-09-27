@@ -84,3 +84,16 @@ def test_coverage_from_ingest_log(wh):
     wh.log_ingest(ctx(2), "daily_bars", "000001.SZ", date(2024, 1, 1), date(2024, 6, 30), 0, 0,
                   status="error", error="boom")
     assert wh.coverage("daily_bars") == {"600519.SH": (date(2023, 1, 1), date(2024, 6, 30))}
+
+
+def test_rate_limiter_spacing_and_jitter():
+    import time
+
+    from china_equities_alpha.resilience import RateLimiter
+
+    rl = RateLimiter(0.02, jitter=0.02)
+    t0 = time.monotonic()
+    for _ in range(4):
+        rl.wait()
+    elapsed = time.monotonic() - t0
+    assert 0.06 <= elapsed < 0.5  # 3 gaps of >= 0.02s each, <= 0.04s each (+ scheduling slack)

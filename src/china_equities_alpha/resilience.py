@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 import traceback
@@ -23,16 +24,19 @@ T = TypeVar("T")
 
 
 class RateLimiter:
-    """Enforce a minimum interval between calls (per source)."""
+    """Enforce a minimum interval between calls, plus random jitter so that parallel
+    workers don't fire in lockstep."""
 
-    def __init__(self, min_interval: float):
+    def __init__(self, min_interval: float, jitter: float = 0.0):
         self.min_interval = min_interval
+        self.jitter = jitter
         self._last = 0.0
         self._lock = threading.Lock()
 
     def wait(self) -> None:
         with self._lock:
-            delay = self._last + self.min_interval - time.monotonic()
+            gap = self.min_interval + (random.uniform(0, self.jitter) if self.jitter else 0.0)
+            delay = self._last + gap - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
             self._last = time.monotonic()
